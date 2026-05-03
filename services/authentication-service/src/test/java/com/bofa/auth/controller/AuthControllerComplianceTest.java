@@ -369,4 +369,88 @@ class AuthControllerComplianceTest {
                     .andExpect(status().isUnauthorized());
         }
     }
+
+    @Nested
+    @DisplayName("Suspended Account Mid-Session — OCC Edge Case")
+    class SuspendedAccountMidSession {
+
+        @Test
+        @DisplayName("valid token still passes /validate after session is invalidated (suspended)")
+        void suspendedAccount_tokenStillValidates() throws Exception {
+            String token = loginAndGetToken();
+            String sessionToken = loginAndGetSessionToken();
+
+            // Suspend the account by invalidating the session mid-flight
+            mockMvc.perform(post("/auth/session/invalidate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new SessionInvalidateRequest(sessionToken))))
+                    .andExpect(status().isOk());
+
+            // The JWT itself is still cryptographically valid and not expired
+            mockMvc.perform(post("/auth/validate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new TokenValidationRequest(token))))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.valid").value(true));
+        }
+
+        @Test
+        @DisplayName("suspended account blocks MFA verify even with correct code")
+        void suspendedAccount_blocksMfaVerify() throws Exception {
+            String sessionToken = loginAndGetSessionToken();
+
+            // Suspend the account mid-session
+            mockMvc.perform(post("/auth/session/invalidate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new SessionInvalidateRequest(sessionToken))))
+                    .andExpect(status().isOk());
+
+            // MFA verify with correct code must still be rejected
+            MfaVerifyRequest mfaRequest = new MfaVerifyRequest(sessionToken, "123456");
+            mockMvc.perform(post("/auth/mfa/verify")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(mfaRequest)))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.error").value("Invalid or expired session"));
+        }
+
+        @Test
+        @DisplayName("suspended account blocks MFA fallback initiation")
+        void suspendedAccount_blocksMfaFallback() throws Exception {
+            String sessionToken = loginAndGetSessionToken();
+
+            // Suspend the account mid-session
+            mockMvc.perform(post("/auth/session/invalidate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new SessionInvalidateRequest(sessionToken))))
+                    .andExpect(status().isOk());
+
+            // MFA fallback must be rejected for suspended account
+            MfaFallbackRequest fallbackRequest = new MfaFallbackRequest(sessionToken, "email", "user@bank.com");
+            mockMvc.perform(post("/auth/mfa/fallback")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(fallbackRequest)))
+                    .andExpect(status().isUnauthorized())
+                    .andExpect(jsonPath("$.error").value("Invalid or expired session"));
+        }
+
+        @Test
+        @DisplayName("suspended account cannot be re-invalidated (returns 404)")
+        void suspendedAccount_cannotBeReInvalidated() throws Exception {
+            String sessionToken = loginAndGetSessionToken();
+
+            // First suspension
+            mockMvc.perform(post("/auth/session/invalidate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new SessionInvalidateRequest(sessionToken))))
+                    .andExpect(status().isOk());
+
+            // Attempting to suspend again returns 404
+            mockMvc.perform(post("/auth/session/invalidate")
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .content(objectMapper.writeValueAsString(new SessionInvalidateRequest(sessionToken))))
+                    .andExpect(status().isNotFound())
+                    .andExpect(jsonPath("$.error").value("Session not found or already invalidated"));
+        }
+    }
 }
