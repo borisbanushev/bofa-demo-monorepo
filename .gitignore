@@ -10,7 +10,7 @@ target/
 node_modules/
 dist/
 *.js.map
-package-lock.json
+
 
 # Python
 __pycache__/
